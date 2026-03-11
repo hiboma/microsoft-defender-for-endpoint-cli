@@ -1,0 +1,37 @@
+[package]
+name = "mde"
+version = "0.1.0"
+edition = "2024"
+description = "CLI tool for Microsoft Defender for Endpoint API"
+license = "MIT"
+repository = "https://github.com/hiboma/defender-for-endpoint-ci"
+
+[dependencies]
+arboard = "3"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+open = "5"
+rand = "0.9"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rpassword = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+base64 = "0.22"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+assert_cmd = "2"
+mockito = "1"
+predicates = "3"
+tempfile = "3"
