@@ -28,14 +28,6 @@ pub struct Cli {
     #[arg(long, env = "MDE_CLIENT_ID", global = true)]
     pub client_id: Option<String>,
 
-    /// Azure AD client secret (for client_credentials flow)
-    #[arg(long, env = "MDE_CLIENT_SECRET", global = true)]
-    pub client_secret: Option<String>,
-
-    /// Access token (overrides OAuth2 flows)
-    #[arg(long, env = "MDE_ACCESS_TOKEN", global = true, hide_env = true)]
-    pub access_token: Option<String>,
-
     /// Output format
     #[arg(
         long,
