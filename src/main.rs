@@ -5,7 +5,7 @@ use mde::auth::oauth2::OAuth2Auth;
 use mde::auth::AuthProvider;
 use mde::cli::{Cli, Commands};
 use mde::client::MdeClient;
-use mde::config::{Config, resolve_value};
+use mde::config::Config;
 use mde::error::AppError;
 
 #[tokio::main]
@@ -30,23 +30,25 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 
     let config = Config::load().unwrap_or_default();
 
-    let tenant_id = resolve_value(
-        cli.tenant_id.as_deref(),
-        "MDE_TENANT_ID",
-        config.auth.tenant_id.as_deref(),
-    );
+    let tenant_id = cli
+        .tenant_id
+        .as_deref()
+        .map(String::from)
+        .or_else(|| std::env::var("MDE_TENANT_ID").ok())
+        .or_else(|| config.auth.tenant_id.clone());
 
-    let client_id = resolve_value(
-        cli.client_id.as_deref(),
-        "MDE_CLIENT_ID",
-        config.auth.client_id.as_deref(),
-    );
+    let client_id = cli
+        .client_id
+        .as_deref()
+        .map(String::from)
+        .or_else(|| std::env::var("MDE_CLIENT_ID").ok())
+        .or_else(|| config.auth.client_id.clone());
 
-    let client_secret = resolve_value(
-        cli.client_secret.as_deref(),
-        "MDE_CLIENT_SECRET",
-        config.auth.client_secret.as_deref(),
-    );
+    let client_secret = std::env::var("MDE_CLIENT_SECRET")
+        .ok()
+        .or_else(|| config.auth.client_secret.clone());
+
+    let access_token = std::env::var("MDE_ACCESS_TOKEN").ok();
 
     // Auth commands only need tenant_id and client_id
     if let Commands::Auth {
@@ -64,8 +66,8 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 
     // For API commands, build client with appropriate auth
     let build_mde_client = |base_url: &str, scope: &str| -> Result<MdeClient, AppError> {
-        // If access_token is provided directly, use it
-        if let Some(ref token) = cli.access_token {
+        // If access_token is provided via MDE_ACCESS_TOKEN env var, use it
+        if let Some(ref token) = access_token {
             let auth = StaticTokenAuth(token.clone());
             return MdeClient::new(base_url.to_string(), Box::new(auth));
         }
@@ -78,7 +80,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
         })?;
         let cs = client_secret.as_ref().ok_or_else(|| {
             AppError::Config(
-                "client_secret not set. Use --client-secret, MDE_CLIENT_SECRET, or --access-token."
+                "client_secret not set. Set MDE_CLIENT_SECRET env var or config.toml [auth].client_secret."
                     .to_string(),
             )
         })?;
@@ -136,7 +138,7 @@ async fn run(cli: Cli) -> Result<(), AppError> {
     }
 }
 
-/// Simple static token auth for --access-token usage.
+/// Simple static token auth for MDE_ACCESS_TOKEN env var usage.
 struct StaticTokenAuth(String);
 
 impl AuthProvider for StaticTokenAuth {

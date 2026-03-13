@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/hiboma/defender-for-endpoint-ci"
 
 [[bin]]
-name = "defender-for-endpoint-cli"
+name = "mde"
 path = "src/main.rs"
 
 [lib]
