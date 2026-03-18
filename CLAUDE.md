@@ -27,6 +27,14 @@ cargo fmt                # Format
 - `src/config/` - Configuration file handling
 - `src/error.rs` - Error types
 
+### Shared Mode
+
+- `mde-cli agent start --shared` writes session info to `~/.local/share/mde-cli/session.json`
+- No `eval` needed; any terminal can auto-detect the agent via session file
+- Session leader monitoring is disabled; idle timeout (8h) still applies
+- `--no-agent` flag forces direct API mode, skipping agent auto-detection
+- Priority: `--no-agent` > `MDE_AGENT_TOKEN` env > session.json > direct mode
+
 ## Code Style
 
 - Follow Rust standard conventions

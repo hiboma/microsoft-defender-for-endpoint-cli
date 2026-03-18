@@ -91,6 +91,8 @@ pub fn stop(socket_path: &Path) -> Result<String, AppError> {
     // SAFETY: kill() with SIGTERM is safe when targeting a known PID.
     let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     if ret == 0 {
+        // Clean up session file if it references this agent.
+        cleanup_session_file(socket_path);
         Ok(format!("Stopped agent (PID {})", pid))
     } else {
         let err = std::io::Error::last_os_error();
@@ -116,5 +118,18 @@ pub fn stop_all() -> Result<String, AppError> {
         }
     }
 
+    // Clean up session file when stopping all agents.
+    crate::agent::session::remove_session();
+
     Ok(results.join("\n"))
+}
+
+/// Remove session file if it references the given socket path.
+fn cleanup_session_file(socket_path: &Path) {
+    if let Some(session) = crate::agent::session::read_session()
+        && session.socket_path == socket_path.display().to_string()
+    {
+        crate::agent::session::remove_session();
+        eprintln!("removed session file");
+    }
 }

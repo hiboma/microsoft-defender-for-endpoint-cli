@@ -22,6 +22,7 @@ fn main() {
                 socket,
                 config,
                 foreground,
+                shared,
             },
     }) = &cli.command
         && !foreground
@@ -29,6 +30,7 @@ fn main() {
         let session_token = mde::agent::generate_token();
         let socket_path = socket.as_ref().map(PathBuf::from);
         let config_path = config.as_ref().map(PathBuf::from);
+        let shared = *shared;
 
         if let Err(e) = mde::agent::ensure_socket_dir() {
             eprintln!("Error: failed to create socket directory: {}", e);
@@ -39,9 +41,18 @@ fn main() {
             socket_path,
             config_path,
             session_token.clone(),
+            shared,
         ) {
             Ok((child_pid, socket_path)) => {
-                mde::agent::server::print_shell_vars(&socket_path, &session_token, child_pid);
+                if shared {
+                    eprintln!("agent started in shared mode, pid {}", child_pid);
+                    eprintln!(
+                        "session file: {}",
+                        mde::agent::session::session_file_path().display()
+                    );
+                } else {
+                    mde::agent::server::print_shell_vars(&socket_path, &session_token, child_pid);
+                }
                 process::exit(0);
             }
             Err(e) => {
@@ -77,7 +88,8 @@ async fn run(cli: Cli) -> Result<(), AppError> {
 
     // Check if we should route through the agent.
     // Commands without a subaction (e.g. `mde alerts` without `list`) display help locally.
-    if let Some(ref agent_token) = cli.token
+    if !cli.no_agent
+        && let Some(ref agent_token) = cli.token
         && requires_agent_routing(&command)
     {
         let socket_path = cli
@@ -87,6 +99,16 @@ async fn run(cli: Cli) -> Result<(), AppError> {
             .unwrap_or_else(mde::agent::resolve_socket_path);
 
         return route_through_agent(&command, &socket_path, agent_token).await;
+    }
+
+    // If no explicit token but a session file exists, use it for auto-detection.
+    if !cli.no_agent
+        && cli.token.is_none()
+        && requires_agent_routing(&command)
+        && let Some(session) = mde::agent::session::read_session()
+        && mde::agent::session::is_session_alive(&session)
+    {
+        return route_through_agent_from_session(&command, session).await;
     }
 
     let config = Config::load().unwrap_or_default();
@@ -198,6 +220,7 @@ async fn handle_agent_command(cmd: &AgentCommand) -> Result<(), AppError> {
             socket,
             config,
             foreground,
+            shared,
         } => {
             // Foreground mode (background is handled before tokio runtime).
             debug_assert!(*foreground, "background mode should be handled in main()");
@@ -212,9 +235,11 @@ async fn handle_agent_command(cmd: &AgentCommand) -> Result<(), AppError> {
             let pid = std::process::id();
             let actual_socket = socket_path.unwrap_or_else(|| mde::agent::pid_socket_path(pid));
 
-            mde::agent::server::print_shell_vars(&actual_socket, &session_token, pid);
+            if !*shared {
+                mde::agent::server::print_shell_vars(&actual_socket, &session_token, pid);
+            }
 
-            mde::agent::server::start(Some(actual_socket), config_path, &session_token)
+            mde::agent::server::start(Some(actual_socket), config_path, &session_token, *shared)
                 .await
                 .map_err(|e| AppError::Config(format!("agent error: {}", e)))?;
 
@@ -261,6 +286,22 @@ async fn route_through_agent(
     Ok(())
 }
 
+/// Route a command through the agent using session file info.
+async fn route_through_agent_from_session(
+    command: &Commands,
+    session: mde::agent::session::SessionInfo,
+) -> Result<(), AppError> {
+    let socket_path = PathBuf::from(&session.socket_path);
+    let (cmd_name, action, args) = extract_command_args(command);
+
+    let output =
+        mde::agent::client::send_command(&cmd_name, &action, &args, &socket_path, &session.token)
+            .await?;
+
+    print!("{}", output);
+    Ok(())
+}
+
 /// Check if a command has a subaction and should be routed through the agent.
 /// Commands without a subaction (e.g. `mde alerts`) only display help,
 /// which can be handled locally without agent involvement.
@@ -290,7 +331,7 @@ fn extract_command_args(command: &Commands) -> (String, String, Vec<String>) {
     // Global flags like --output, --raw, --tenant-id are passed through
     // so the agent can honor the requested output format.
     let strip_flags_with_value = ["--socket", "--token"];
-    let strip_flags_bool: [&str; 0] = [];
+    let strip_flags_bool = ["--no-agent"];
 
     let mut skip_next = false;
     for arg in all_args.iter().skip(1) {
