@@ -16,6 +16,10 @@ pub enum AgentCommand {
         /// Run in foreground (do not daemonize)
         #[arg(long)]
         foreground: bool,
+
+        /// Share the agent across terminals via session file (no eval needed)
+        #[arg(long)]
+        shared: bool,
     },
 
     /// Stop the agent process
