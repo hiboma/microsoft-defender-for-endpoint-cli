@@ -44,6 +44,10 @@ pub struct Cli {
     /// Agent session token (hidden, set by agent start)
     #[arg(long, env = "MDE_AGENT_TOKEN", global = true, hide = true)]
     pub token: Option<String>,
+
+    /// Skip agent auto-detection and use direct API mode
+    #[arg(long, global = true)]
+    pub no_agent: bool,
 }
 
 #[derive(Subcommand)]

@@ -24,6 +24,7 @@ pub async fn start(
     socket_path: Option<PathBuf>,
     config_path: Option<PathBuf>,
     session_token: &str,
+    shared: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::load(config_path.as_deref());
 
@@ -64,7 +65,11 @@ pub async fn start(
     write_pid_file(&pid_file_path(&socket_path), pid)?;
 
     eprintln!("agent: listening on {}", socket_path.display());
-    eprintln!("agent: session leader PID {}", session_leader_pid);
+    if shared {
+        eprintln!("agent: shared mode (session leader monitoring disabled)");
+    } else {
+        eprintln!("agent: session leader PID {}", session_leader_pid);
+    }
 
     run_agent(
         listener,
@@ -72,6 +77,7 @@ pub async fn start(
         session_token,
         session_leader_pid,
         config,
+        shared,
     )
     .await
 }
@@ -82,6 +88,7 @@ pub fn fork_into_background(
     socket_path: Option<PathBuf>,
     config_path: Option<PathBuf>,
     session_token: String,
+    shared: bool,
 ) -> Result<(u32, PathBuf), Box<dyn std::error::Error>> {
     let _socket_path = socket_path.unwrap_or_else(|| {
         // We don't know the child PID yet, use a temporary placeholder.
@@ -135,7 +142,11 @@ pub fn fork_into_background(
                     .expect("failed to write PID file");
 
                 eprintln!("agent: listening on {}", actual_socket_path.display());
-                eprintln!("agent: session leader PID {}", session_leader_pid);
+                if shared {
+                    eprintln!("agent: shared mode (session leader monitoring disabled)");
+                } else {
+                    eprintln!("agent: session leader PID {}", session_leader_pid);
+                }
 
                 if let Err(e) = run_agent(
                     listener,
@@ -143,6 +154,7 @@ pub fn fork_into_background(
                     &session_token,
                     session_leader_pid,
                     config,
+                    shared,
                 )
                 .await
                 {
@@ -209,12 +221,14 @@ fn redirect_stdio(socket_path: &Path) {
 }
 
 /// Run the agent server (accept loop + watchdog).
+#[allow(clippy::too_many_arguments)]
 async fn run_agent(
     listener: UnixListener,
     socket_path: PathBuf,
     session_token: &str,
     session_leader_pid: libc::pid_t,
     config: AgentConfig,
+    shared: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_token = Arc::new(session_token.to_string());
     let last_activity = Arc::new(AtomicU64::new(
@@ -231,25 +245,64 @@ async fn run_agent(
     let audit_log = Arc::new(AuditLog::new());
     let semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
+    // Shared mode: write session file for cross-terminal auto-detection.
+    if shared {
+        let session_info = crate::agent::session::SessionInfo {
+            socket_path: socket_path.display().to_string(),
+            token: session_token.as_str().to_string(),
+            pid: std::process::id(),
+            started_at: chrono::Utc::now(),
+        };
+        if let Err(e) = crate::agent::session::write_session(&session_info) {
+            eprintln!("agent: failed to write session file: {}", e);
+        } else {
+            eprintln!(
+                "agent: session file written to {}",
+                crate::agent::session::session_file_path().display()
+            );
+        }
+    }
+
     let socket_path_clone = socket_path.clone();
     let last_activity_clone = last_activity.clone();
 
-    let shutdown_reason = tokio::select! {
-        reason = watchdog(session_leader_pid, last_activity_clone, &config.watchdog) => reason,
-        _ = accept_loop(
-            listener,
-            session_token,
-            last_activity,
-            whitelist,
-            rate_limiter,
-            audit_log,
-            semaphore,
-        ) => "accept loop ended",
-        _ = tokio::signal::ctrl_c() => "received SIGINT",
+    let shutdown_reason = if shared {
+        // Shared mode: no session leader monitoring, idle timeout only.
+        tokio::select! {
+            reason = watchdog_idle_only(last_activity_clone, &config.watchdog) => reason,
+            _ = accept_loop(
+                listener,
+                session_token,
+                last_activity,
+                whitelist,
+                rate_limiter,
+                audit_log,
+                semaphore,
+            ) => "accept loop ended",
+            _ = tokio::signal::ctrl_c() => "received SIGINT",
+        }
+    } else {
+        tokio::select! {
+            reason = watchdog(session_leader_pid, last_activity_clone, &config.watchdog) => reason,
+            _ = accept_loop(
+                listener,
+                session_token,
+                last_activity,
+                whitelist,
+                rate_limiter,
+                audit_log,
+                semaphore,
+            ) => "accept loop ended",
+            _ = tokio::signal::ctrl_c() => "received SIGINT",
+        }
     };
 
     eprintln!("agent: shutting down ({})", shutdown_reason);
     cleanup_files(&socket_path_clone);
+    if shared {
+        crate::agent::session::remove_session();
+        eprintln!("agent: session file removed");
+    }
     Ok(())
 }
 
@@ -405,6 +458,28 @@ async fn watchdog(
         }
 
         // Check idle timeout.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let last = last_activity.load(Ordering::Relaxed);
+        if now - last > idle_timeout_secs {
+            return "idle timeout";
+        }
+    }
+}
+
+/// Watchdog task for shared mode: idle timeout only, no session leader monitoring.
+async fn watchdog_idle_only(
+    last_activity: Arc<AtomicU64>,
+    config: &crate::agent::security::WatchdogConfig,
+) -> &'static str {
+    let idle_timeout_secs = config.idle_timeout_hours * 3600;
+    let check_interval = tokio::time::Duration::from_secs(config.check_interval_secs);
+
+    loop {
+        tokio::time::sleep(check_interval).await;
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

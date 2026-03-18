@@ -4,6 +4,7 @@ pub mod peer_verify;
 pub mod protocol;
 pub mod security;
 pub mod server;
+pub mod session;
 
 use std::fs;
 use std::path::PathBuf;
