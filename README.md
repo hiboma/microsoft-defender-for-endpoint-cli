@@ -61,7 +61,7 @@ client_secret = "your-client-secret"
 |---|---|---|
 | `Alert.Read.All` | Application | Read alerts |
 | `Machine.Read.All` | Application | Read machine info |
-| `AdvancedQuery.Read.All` | Application | Run advanced hunting queries |
+| `ThreatHunting.Read.All` | Application | Run advanced hunting queries (Graph API) |
 | `Incident.Read.All` | Delegated | Read incidents (Graph API) |
 
 3. Create a client secret under **Certificates & secrets**
@@ -150,8 +150,8 @@ mde-cli alerts list --raw
 
 | Subcommand | Base URL | Scope |
 |---|---|---|
-| `alerts`, `machines`, `hunting` | `https://api.security.microsoft.com` | `https://api.securitycenter.microsoft.com/.default` |
-| `incidents` | `https://graph.microsoft.com` | `https://graph.microsoft.com/.default` |
+| `alerts`, `machines` | `https://api.security.microsoft.com` | `https://api.securitycenter.microsoft.com/.default` |
+| `hunting`, `incidents` | `https://graph.microsoft.com` | `https://graph.microsoft.com/.default` |
 
 ## License
 
