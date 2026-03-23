@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -240,12 +239,6 @@ async fn run_agent(
     shared: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_token = Arc::new(session_token.to_string());
-    let last_activity = Arc::new(AtomicU64::new(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    ));
 
     let whitelist = Arc::new(CommandWhitelist::new(
         config.whitelist.allowed_commands.into_iter().collect(),
@@ -273,16 +266,13 @@ async fn run_agent(
     }
 
     let socket_path_clone = socket_path.clone();
-    let last_activity_clone = last_activity.clone();
 
     let shutdown_reason = if shared {
-        // Shared mode: no session leader monitoring, idle timeout only.
+        // Shared mode: no session leader monitoring, signal-only shutdown.
         tokio::select! {
-            reason = watchdog_idle_only(last_activity_clone, &config.watchdog) => reason,
             _ = accept_loop(
                 listener,
                 session_token,
-                last_activity,
                 whitelist,
                 rate_limiter,
                 audit_log,
@@ -292,11 +282,10 @@ async fn run_agent(
         }
     } else {
         tokio::select! {
-            reason = watchdog(session_leader_pid, last_activity_clone, &config.watchdog) => reason,
+            reason = watchdog(session_leader_pid, &config.watchdog) => reason,
             _ = accept_loop(
                 listener,
                 session_token,
-                last_activity,
                 whitelist,
                 rate_limiter,
                 audit_log,
@@ -319,7 +308,6 @@ async fn run_agent(
 async fn accept_loop(
     listener: UnixListener,
     session_token: Arc<String>,
-    last_activity: Arc<AtomicU64>,
     whitelist: Arc<CommandWhitelist>,
     rate_limiter: Arc<RateLimiter>,
     audit_log: Arc<AuditLog>,
@@ -339,7 +327,6 @@ async fn accept_loop(
         };
 
         let session_token = session_token.clone();
-        let last_activity = last_activity.clone();
         let whitelist = whitelist.clone();
         let rate_limiter = rate_limiter.clone();
         let audit_log = audit_log.clone();
@@ -348,7 +335,6 @@ async fn accept_loop(
             if let Err(e) = handle_connection(
                 stream,
                 &session_token,
-                &last_activity,
                 &whitelist,
                 &rate_limiter,
                 &audit_log,
@@ -366,7 +352,6 @@ async fn accept_loop(
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     session_token: &str,
-    last_activity: &AtomicU64,
     whitelist: &CommandWhitelist,
     rate_limiter: &RateLimiter,
     audit_log: &AuditLog,
@@ -430,15 +415,6 @@ async fn handle_connection(
         }
     };
 
-    // Update last activity timestamp.
-    last_activity.store(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        Ordering::Relaxed,
-    );
-
     let response = handle_request(request, session_token, whitelist, rate_limiter, audit_log).await;
 
     writer
@@ -447,13 +423,12 @@ async fn handle_connection(
     Ok(())
 }
 
-/// Watchdog task: checks session leader liveness and idle timeout.
+/// Watchdog task: checks session leader liveness.
+/// Returns a reason string when the agent should shut down.
 async fn watchdog(
     session_leader_pid: libc::pid_t,
-    last_activity: Arc<AtomicU64>,
     config: &crate::agent::security::WatchdogConfig,
 ) -> &'static str {
-    let idle_timeout_secs = config.idle_timeout_hours * 3600;
     let check_interval = tokio::time::Duration::from_secs(config.check_interval_secs);
 
     loop {
@@ -464,38 +439,6 @@ async fn watchdog(
         let session_alive = unsafe { libc::kill(session_leader_pid, 0) } == 0;
         if !session_alive {
             return "session leader exited";
-        }
-
-        // Check idle timeout.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let last = last_activity.load(Ordering::Relaxed);
-        if now - last > idle_timeout_secs {
-            return "idle timeout";
-        }
-    }
-}
-
-/// Watchdog task for shared mode: idle timeout only, no session leader monitoring.
-async fn watchdog_idle_only(
-    last_activity: Arc<AtomicU64>,
-    config: &crate::agent::security::WatchdogConfig,
-) -> &'static str {
-    let idle_timeout_secs = config.idle_timeout_hours * 3600;
-    let check_interval = tokio::time::Duration::from_secs(config.check_interval_secs);
-
-    loop {
-        tokio::time::sleep(check_interval).await;
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let last = last_activity.load(Ordering::Relaxed);
-        if now - last > idle_timeout_secs {
-            return "idle timeout";
         }
     }
 }
