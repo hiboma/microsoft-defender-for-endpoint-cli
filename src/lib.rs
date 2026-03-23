@@ -8,3 +8,4 @@ pub mod dispatch;
 pub mod error;
 pub mod models;
 pub mod output;
+pub mod profile;
