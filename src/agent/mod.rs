@@ -146,6 +146,8 @@ const ENV_WHITELIST: &[&str] = &[
     // Debug
     "RUST_LOG",
     "RUST_BACKTRACE",
+    // MDE configuration (non-secret)
+    "MDE_TENANT_ID",
 ];
 
 /// Environment variable prefixes allowed to survive sanitization.
@@ -254,6 +256,7 @@ mod env_tests {
         assert!(is_env_whitelisted("RUST_LOG"));
         assert!(is_env_whitelisted("SSL_CERT_FILE"));
         assert!(is_env_whitelisted("http_proxy"));
+        assert!(is_env_whitelisted("MDE_TENANT_ID"));
     }
 
     #[test]
