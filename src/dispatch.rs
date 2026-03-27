@@ -6,7 +6,7 @@ use crate::auth::StaticTokenAuth;
 use crate::auth::oauth2::OAuth2Auth;
 use crate::cli::{Cli, Commands};
 use crate::client::MdeClient;
-use crate::config::Config;
+use crate::config::MdeCredentials;
 use crate::error::AppError;
 
 /// Global mutex to serialize stdout capture across concurrent requests.
@@ -20,7 +20,11 @@ fn stdout_mutex() -> &'static Mutex<()> {
 
 /// Dispatch a command from a CLI args vector (used by agent handler).
 /// Captures stdout output and returns it as a string.
-pub async fn dispatch_from_args(args: &[String]) -> Result<String, AppError> {
+/// Credentials are provided via `MdeCredentials` instead of environment variables.
+pub async fn dispatch_from_args(
+    args: &[String],
+    credentials: &MdeCredentials,
+) -> Result<String, AppError> {
     let cli = Cli::try_parse_from(args).map_err(|e| AppError::InvalidInput(e.to_string()))?;
 
     let command = match cli.command {
@@ -28,46 +32,33 @@ pub async fn dispatch_from_args(args: &[String]) -> Result<String, AppError> {
         None => return Ok(String::new()),
     };
 
-    let config = Config::load().unwrap_or_default();
-    let access_token = std::env::var("MDE_ACCESS_TOKEN").ok();
-
     let build_mde_client = |base_url: &str, scope: &str| -> Result<MdeClient, AppError> {
-        if let Some(ref token) = access_token {
+        if let Some(ref token) = credentials.access_token {
             let auth = StaticTokenAuth(token.clone());
             return MdeClient::new(base_url.to_string(), Box::new(auth));
         }
 
-        let tenant_id = cli
-            .tenant_id
-            .as_deref()
-            .map(String::from)
-            .or_else(|| std::env::var("MDE_TENANT_ID").ok())
-            .or_else(|| config.auth.tenant_id.clone())
-            .ok_or_else(|| {
-                AppError::Config("tenant_id not set. Use --tenant-id or MDE_TENANT_ID.".to_string())
-            })?;
+        let tenant_id = credentials.tenant_id.as_ref().ok_or_else(|| {
+            AppError::Config("tenant_id not set. Use --tenant-id or MDE_TENANT_ID.".to_string())
+        })?;
 
-        let client_id = cli
-            .client_id
-            .as_deref()
-            .map(String::from)
-            .or_else(|| std::env::var("MDE_CLIENT_ID").ok())
-            .or_else(|| config.auth.client_id.clone())
-            .ok_or_else(|| {
-                AppError::Config("client_id not set. Use --client-id or MDE_CLIENT_ID.".to_string())
-            })?;
+        let client_id = credentials.client_id.as_ref().ok_or_else(|| {
+            AppError::Config("client_id not set. Use --client-id or MDE_CLIENT_ID.".to_string())
+        })?;
 
-        let client_secret = std::env::var("MDE_CLIENT_SECRET")
-            .ok()
-            .or_else(|| config.auth.client_secret.clone())
-            .ok_or_else(|| {
-                AppError::Config(
-                    "client_secret not set. Set MDE_CLIENT_SECRET env var or config.toml [auth].client_secret."
-                        .to_string(),
-                )
-            })?;
+        let client_secret = credentials.client_secret.as_ref().ok_or_else(|| {
+            AppError::Config(
+                "client_secret not set. Set MDE_CLIENT_SECRET env var or config.toml [auth].client_secret."
+                    .to_string(),
+            )
+        })?;
 
-        let auth = OAuth2Auth::new(tenant_id, client_id, client_secret, scope.to_string())?;
+        let auth = OAuth2Auth::new(
+            tenant_id.clone(),
+            client_id.clone(),
+            client_secret.clone(),
+            scope.to_string(),
+        )?;
         MdeClient::new(base_url.to_string(), Box::new(auth))
     };
 

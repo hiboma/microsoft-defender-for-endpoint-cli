@@ -5,6 +5,97 @@ use serde::Deserialize;
 
 use crate::error::AppError;
 
+/// Resolved MDE credentials collected from CLI args, environment variables, and config.toml.
+/// Once constructed, the process should unset the MDE_* environment variables so that
+/// forked child processes (agent) do not inherit credentials via the environment.
+#[derive(Debug, Clone, Default)]
+pub struct MdeCredentials {
+    pub tenant_id: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub access_token: Option<String>,
+}
+
+impl MdeCredentials {
+    /// Resolve credentials from CLI args, environment variables, and config.toml.
+    /// Priority: CLI args > environment variables > config.toml.
+    pub fn resolve(
+        cli_tenant_id: Option<&str>,
+        cli_client_id: Option<&str>,
+        config: &Config,
+    ) -> Self {
+        let tenant_id = cli_tenant_id
+            .map(String::from)
+            .or_else(|| std::env::var("MDE_TENANT_ID").ok())
+            .or_else(|| config.auth.tenant_id.clone());
+
+        let client_id = cli_client_id
+            .map(String::from)
+            .or_else(|| std::env::var("MDE_CLIENT_ID").ok())
+            .or_else(|| config.auth.client_id.clone());
+
+        let client_secret = std::env::var("MDE_CLIENT_SECRET")
+            .ok()
+            .or_else(|| config.auth.client_secret.clone());
+
+        let access_token = std::env::var("MDE_ACCESS_TOKEN").ok();
+
+        Self {
+            tenant_id,
+            client_id,
+            client_secret,
+            access_token,
+        }
+    }
+
+    /// Validate that required credentials are present for API access.
+    /// If access_token is set, tenant_id/client_id/client_secret are not required.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.access_token.is_some() {
+            return Ok(());
+        }
+
+        let mut missing = Vec::new();
+        if self.tenant_id.is_none() {
+            missing.push("MDE_TENANT_ID");
+        }
+        if self.client_id.is_none() {
+            missing.push("MDE_CLIENT_ID");
+        }
+        if self.client_secret.is_none() {
+            missing.push("MDE_CLIENT_SECRET");
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "missing required credentials: {}. Set via environment variables or config.toml.",
+                missing.join(", ")
+            ))
+        }
+    }
+
+    /// Remove MDE credential environment variables from the current process.
+    /// Call this after resolving credentials to prevent leaking them to child processes.
+    ///
+    /// # Safety
+    /// Must be called in a single-threaded context (before tokio runtime creation).
+    pub unsafe fn clear_env() {
+        for key in &[
+            "MDE_TENANT_ID",
+            "MDE_CLIENT_ID",
+            "MDE_CLIENT_SECRET",
+            "MDE_ACCESS_TOKEN",
+        ] {
+            // SAFETY: Caller guarantees single-threaded context.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
@@ -116,5 +207,145 @@ graph_base_url = "https://graph.microsoft.com"
 
         let result = resolve_value(None, "NONEXISTENT_VAR_12345", None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_mde_credentials_validate_with_access_token() {
+        let creds = MdeCredentials {
+            access_token: Some("token".to_string()),
+            ..Default::default()
+        };
+        assert!(creds.validate().is_ok());
+    }
+
+    #[test]
+    fn test_mde_credentials_validate_with_oauth2() {
+        let creds = MdeCredentials {
+            tenant_id: Some("t".to_string()),
+            client_id: Some("c".to_string()),
+            client_secret: Some("s".to_string()),
+            access_token: None,
+        };
+        assert!(creds.validate().is_ok());
+    }
+
+    #[test]
+    fn test_mde_credentials_validate_missing() {
+        let creds = MdeCredentials::default();
+        let err = creds.validate().unwrap_err();
+        assert!(err.contains("MDE_TENANT_ID"));
+        assert!(err.contains("MDE_CLIENT_ID"));
+        assert!(err.contains("MDE_CLIENT_SECRET"));
+    }
+
+    #[test]
+    fn test_mde_credentials_validate_partial_missing() {
+        let creds = MdeCredentials {
+            tenant_id: Some("t".to_string()),
+            ..Default::default()
+        };
+        let err = creds.validate().unwrap_err();
+        assert!(!err.contains("MDE_TENANT_ID"));
+        assert!(err.contains("MDE_CLIENT_ID"));
+        assert!(err.contains("MDE_CLIENT_SECRET"));
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_cli_overrides_config() {
+        let config = Config {
+            auth: AuthConfig {
+                tenant_id: Some("config-tenant".to_string()),
+                client_id: Some("config-client".to_string()),
+                client_secret: Some("config-secret".to_string()),
+            },
+            ..Default::default()
+        };
+        let creds = MdeCredentials::resolve(Some("cli-tenant"), Some("cli-client"), &config);
+        assert_eq!(creds.tenant_id.as_deref(), Some("cli-tenant"));
+        assert_eq!(creds.client_id.as_deref(), Some("cli-client"));
+        // client_secret has no CLI arg, falls through to config
+        assert_eq!(creds.client_secret.as_deref(), Some("config-secret"));
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_config_fallback() {
+        let config = Config {
+            auth: AuthConfig {
+                tenant_id: Some("config-tenant".to_string()),
+                client_id: Some("config-client".to_string()),
+                client_secret: Some("config-secret".to_string()),
+            },
+            ..Default::default()
+        };
+        let creds = MdeCredentials::resolve(None, None, &config);
+        assert_eq!(creds.tenant_id.as_deref(), Some("config-tenant"));
+        assert_eq!(creds.client_id.as_deref(), Some("config-client"));
+        assert_eq!(creds.client_secret.as_deref(), Some("config-secret"));
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_empty() {
+        let config = Config::default();
+        let creds = MdeCredentials::resolve(None, None, &config);
+        assert!(creds.tenant_id.is_none());
+        assert!(creds.client_id.is_none());
+        assert!(creds.client_secret.is_none());
+        assert!(creds.access_token.is_none());
+    }
+
+    #[test]
+    fn test_mde_credentials_clear_env() {
+        // Set MDE env vars
+        unsafe {
+            std::env::set_var("MDE_TENANT_ID", "test-tenant");
+            std::env::set_var("MDE_CLIENT_ID", "test-client");
+            std::env::set_var("MDE_CLIENT_SECRET", "test-secret");
+            std::env::set_var("MDE_ACCESS_TOKEN", "test-token");
+        }
+
+        // Verify they are set
+        assert!(std::env::var("MDE_TENANT_ID").is_ok());
+        assert!(std::env::var("MDE_CLIENT_ID").is_ok());
+        assert!(std::env::var("MDE_CLIENT_SECRET").is_ok());
+        assert!(std::env::var("MDE_ACCESS_TOKEN").is_ok());
+
+        // Clear them
+        unsafe {
+            MdeCredentials::clear_env();
+        }
+
+        // Verify they are removed
+        assert!(std::env::var("MDE_TENANT_ID").is_err());
+        assert!(std::env::var("MDE_CLIENT_ID").is_err());
+        assert!(std::env::var("MDE_CLIENT_SECRET").is_err());
+        assert!(std::env::var("MDE_ACCESS_TOKEN").is_err());
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_then_clear_env() {
+        // Set env vars
+        unsafe {
+            std::env::set_var("MDE_TENANT_ID", "env-tenant");
+            std::env::set_var("MDE_CLIENT_SECRET", "env-secret");
+        }
+
+        // Resolve picks up env vars
+        let config = Config::default();
+        let creds = MdeCredentials::resolve(None, None, &config);
+        assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
+        assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
+
+        // Clear env
+        unsafe {
+            MdeCredentials::clear_env();
+        }
+
+        // Credentials struct still holds the values
+        assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
+        assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
+
+        // But env vars are gone
+        assert!(std::env::var("MDE_TENANT_ID").is_err());
+        assert!(std::env::var("MDE_CLIENT_SECRET").is_err());
     }
 }

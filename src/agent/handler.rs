@@ -2,6 +2,7 @@ use crate::agent::protocol::{AgentRequest, AgentResponse};
 use crate::agent::security::{
     AuditLog, AuditResult, CommandWhitelist, RateLimiter, constant_time_eq, validate_command_name,
 };
+use crate::config::MdeCredentials;
 use crate::dispatch;
 
 /// Handle an incoming agent request with security checks.
@@ -11,6 +12,7 @@ pub async fn handle_request(
     whitelist: &CommandWhitelist,
     rate_limiter: &RateLimiter,
     audit_log: &AuditLog,
+    credentials: &MdeCredentials,
 ) -> AgentResponse {
     let request_id = request.request_id.clone();
 
@@ -90,7 +92,7 @@ pub async fn handle_request(
     // 6. Build CLI args and dispatch.
     let cli_args = build_cli_args(&request);
 
-    match dispatch::dispatch_from_args(&cli_args).await {
+    match dispatch::dispatch_from_args(&cli_args, credentials).await {
         Ok(output) => {
             audit_log.log(AuditLog::entry(
                 request_id.clone(),
@@ -178,6 +180,7 @@ mod tests {
         let whitelist = CommandWhitelist::new(["alerts"].iter().map(|s| s.to_string()).collect());
         let rate_limiter = RateLimiter::new(60);
         let audit_log = AuditLog::new();
+        let credentials = MdeCredentials::default();
 
         let req = AgentRequest {
             token: "wrong-token".to_string(),
@@ -187,8 +190,15 @@ mod tests {
             args: vec![],
         };
 
-        let resp =
-            handle_request(req, "correct-token", &whitelist, &rate_limiter, &audit_log).await;
+        let resp = handle_request(
+            req,
+            "correct-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
         assert_eq!(resp.status, crate::agent::protocol::ResponseStatus::Denied);
         assert_eq!(resp.error.unwrap(), "authentication failed");
     }
@@ -198,6 +208,7 @@ mod tests {
         let whitelist = CommandWhitelist::new(["alerts"].iter().map(|s| s.to_string()).collect());
         let rate_limiter = RateLimiter::new(60);
         let audit_log = AuditLog::new();
+        let credentials = MdeCredentials::default();
 
         let req = AgentRequest {
             token: "valid-token".to_string(),
@@ -207,7 +218,15 @@ mod tests {
             args: vec![],
         };
 
-        let resp = handle_request(req, "valid-token", &whitelist, &rate_limiter, &audit_log).await;
+        let resp = handle_request(
+            req,
+            "valid-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
         assert_eq!(resp.status, crate::agent::protocol::ResponseStatus::Denied);
         assert_eq!(resp.error.unwrap(), "command not allowed");
     }
@@ -217,6 +236,7 @@ mod tests {
         let whitelist = CommandWhitelist::new(["alerts"].iter().map(|s| s.to_string()).collect());
         let rate_limiter = RateLimiter::new(60);
         let audit_log = AuditLog::new();
+        let credentials = MdeCredentials::default();
 
         let req = AgentRequest {
             token: "valid-token".to_string(),
@@ -226,7 +246,15 @@ mod tests {
             args: vec!["--tenant-id".to_string(), "attacker-tenant".to_string()],
         };
 
-        let resp = handle_request(req, "valid-token", &whitelist, &rate_limiter, &audit_log).await;
+        let resp = handle_request(
+            req,
+            "valid-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
         assert_eq!(resp.status, crate::agent::protocol::ResponseStatus::Denied);
         assert_eq!(resp.error.unwrap(), "invalid argument");
     }
@@ -236,6 +264,7 @@ mod tests {
         let whitelist = CommandWhitelist::new(["alerts"].iter().map(|s| s.to_string()).collect());
         let rate_limiter = RateLimiter::new(60);
         let audit_log = AuditLog::new();
+        let credentials = MdeCredentials::default();
 
         let req = AgentRequest {
             token: "valid-token".to_string(),
@@ -245,7 +274,15 @@ mod tests {
             args: vec![],
         };
 
-        let resp = handle_request(req, "valid-token", &whitelist, &rate_limiter, &audit_log).await;
+        let resp = handle_request(
+            req,
+            "valid-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
         assert_eq!(resp.status, crate::agent::protocol::ResponseStatus::Denied);
         assert_eq!(resp.error.unwrap(), "invalid command");
     }
@@ -255,6 +292,7 @@ mod tests {
         let whitelist = CommandWhitelist::new(["alerts"].iter().map(|s| s.to_string()).collect());
         let rate_limiter = RateLimiter::new(1); // 1 per minute
         let audit_log = AuditLog::new();
+        let credentials = MdeCredentials::default();
 
         // First request exhausts the token.
         let req1 = AgentRequest {
@@ -264,7 +302,15 @@ mod tests {
             action: "list".to_string(),
             args: vec![],
         };
-        let _ = handle_request(req1, "valid-token", &whitelist, &rate_limiter, &audit_log).await;
+        let _ = handle_request(
+            req1,
+            "valid-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
 
         // Second request should be rate limited.
         let req2 = AgentRequest {
@@ -274,7 +320,15 @@ mod tests {
             action: "list".to_string(),
             args: vec![],
         };
-        let resp = handle_request(req2, "valid-token", &whitelist, &rate_limiter, &audit_log).await;
+        let resp = handle_request(
+            req2,
+            "valid-token",
+            &whitelist,
+            &rate_limiter,
+            &audit_log,
+            &credentials,
+        )
+        .await;
         assert_eq!(resp.status, crate::agent::protocol::ResponseStatus::Denied);
         assert_eq!(resp.error.unwrap(), "rate limited");
     }
