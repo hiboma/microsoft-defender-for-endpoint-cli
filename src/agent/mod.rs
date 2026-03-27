@@ -146,11 +146,6 @@ const ENV_WHITELIST: &[&str] = &[
     // Debug
     "RUST_LOG",
     "RUST_BACKTRACE",
-    // MDE configuration
-    "MDE_TENANT_ID",
-    "MDE_CLIENT_ID",
-    "MDE_CLIENT_SECRET",
-    "MDE_ACCESS_TOKEN",
 ];
 
 /// Environment variable prefixes allowed to survive sanitization.
@@ -249,37 +244,9 @@ pub fn harden_process() {
 }
 
 /// Validate that required MDE credentials are available before starting the agent.
-/// Checks environment variables and config.toml. Returns an error message listing
-/// any missing credentials.
-pub fn validate_credentials() -> Result<(), String> {
-    let config = crate::config::Config::load().unwrap_or_default();
-    let has_access_token = std::env::var("MDE_ACCESS_TOKEN").is_ok();
-
-    // If MDE_ACCESS_TOKEN is set, tenant_id/client_id/client_secret are not required.
-    if has_access_token {
-        return Ok(());
-    }
-
-    let mut missing = Vec::new();
-
-    if std::env::var("MDE_TENANT_ID").is_err() && config.auth.tenant_id.is_none() {
-        missing.push("MDE_TENANT_ID");
-    }
-    if std::env::var("MDE_CLIENT_ID").is_err() && config.auth.client_id.is_none() {
-        missing.push("MDE_CLIENT_ID");
-    }
-    if std::env::var("MDE_CLIENT_SECRET").is_err() && config.auth.client_secret.is_none() {
-        missing.push("MDE_CLIENT_SECRET");
-    }
-
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "missing required credentials: {}. Set via environment variables or config.toml.",
-            missing.join(", ")
-        ))
-    }
+/// Delegates to `MdeCredentials::validate()`.
+pub fn validate_credentials(credentials: &crate::config::MdeCredentials) -> Result<(), String> {
+    credentials.validate()
 }
 
 #[cfg(test)]
@@ -293,7 +260,6 @@ mod env_tests {
         assert!(is_env_whitelisted("RUST_LOG"));
         assert!(is_env_whitelisted("SSL_CERT_FILE"));
         assert!(is_env_whitelisted("http_proxy"));
-        assert!(is_env_whitelisted("MDE_TENANT_ID"));
     }
 
     #[test]
@@ -304,10 +270,13 @@ mod env_tests {
     }
 
     #[test]
-    fn test_is_env_whitelisted_allows_mde_credentials() {
-        assert!(is_env_whitelisted("MDE_CLIENT_ID"));
-        assert!(is_env_whitelisted("MDE_CLIENT_SECRET"));
-        assert!(is_env_whitelisted("MDE_ACCESS_TOKEN"));
+    fn test_is_env_whitelisted_rejects_mde_credentials() {
+        // MDE credentials are no longer in the whitelist.
+        // They are resolved into MdeCredentials before fork and cleared from env.
+        assert!(!is_env_whitelisted("MDE_TENANT_ID"));
+        assert!(!is_env_whitelisted("MDE_CLIENT_ID"));
+        assert!(!is_env_whitelisted("MDE_CLIENT_SECRET"));
+        assert!(!is_env_whitelisted("MDE_ACCESS_TOKEN"));
     }
 
     #[test]
@@ -343,5 +312,36 @@ mod env_tests {
 
         let home_after = std::env::var("HOME").ok();
         assert_eq!(home_before, home_after, "HOME should survive sanitization");
+    }
+
+    #[test]
+    fn test_sanitize_env_removes_mde_credentials() {
+        // MDE credentials are no longer whitelisted and should be removed by sanitize_env.
+        let key = "MDE_CLIENT_SECRET";
+        unsafe {
+            std::env::set_var(key, "should-be-removed");
+        }
+        assert!(std::env::var(key).is_ok());
+
+        sanitize_env();
+
+        assert!(
+            std::env::var(key).is_err(),
+            "MDE_CLIENT_SECRET should be removed by sanitize_env"
+        );
+    }
+
+    #[test]
+    fn test_validate_credentials_delegates_to_mde_credentials() {
+        let creds = crate::config::MdeCredentials {
+            tenant_id: Some("t".to_string()),
+            client_id: Some("c".to_string()),
+            client_secret: Some("s".to_string()),
+            access_token: None,
+        };
+        assert!(validate_credentials(&creds).is_ok());
+
+        let empty = crate::config::MdeCredentials::default();
+        assert!(validate_credentials(&empty).is_err());
     }
 }
