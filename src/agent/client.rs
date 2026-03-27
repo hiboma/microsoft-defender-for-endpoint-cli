@@ -91,6 +91,15 @@ pub async fn status() -> Result<String, AppError> {
     }
 }
 
+/// Stop the agent using session.json to find the socket path.
+pub fn stop_from_session() -> Result<String, AppError> {
+    let session = crate::agent::session::read_session().ok_or_else(|| {
+        AppError::Config("agent is not running (no session file found)".to_string())
+    })?;
+    let socket_path = std::path::PathBuf::from(&session.socket_path);
+    stop(&socket_path)
+}
+
 /// Stop the agent by sending SIGTERM.
 pub fn stop(socket_path: &Path) -> Result<String, AppError> {
     let pid_file = crate::agent::pid_file_path(socket_path);

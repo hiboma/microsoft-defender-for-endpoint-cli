@@ -253,12 +253,10 @@ async fn handle_agent_command(
         AgentCommand::Stop { socket, all } => {
             let msg = if *all {
                 mde::agent::client::stop_all()?
+            } else if let Some(s) = socket {
+                mde::agent::client::stop(&PathBuf::from(s))?
             } else {
-                let socket_path = socket
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(mde::agent::resolve_socket_path);
-                mde::agent::client::stop(&socket_path)?
+                mde::agent::client::stop_from_session()?
             };
             println!("{}", msg);
             Ok(())
