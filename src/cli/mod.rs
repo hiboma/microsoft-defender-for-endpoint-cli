@@ -41,11 +41,11 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     /// Azure AD tenant ID
-    #[arg(long, env = "MDE_TENANT_ID", global = true)]
+    #[arg(long, env = "MDE_TENANT_ID", global = true, hide = true)]
     pub tenant_id: Option<String>,
 
     /// Azure AD client ID
-    #[arg(long, env = "MDE_CLIENT_ID", global = true)]
+    #[arg(long, env = "MDE_CLIENT_ID", global = true, hide = true)]
     pub client_id: Option<String>,
 
     /// Output format
@@ -53,7 +53,7 @@ pub struct Cli {
     pub output: OutputFormat,
 
     /// Output raw API response without extracting data
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub raw: bool,
 
     /// Agent socket path (hidden, set by agent start)
@@ -65,7 +65,7 @@ pub struct Cli {
     pub token: Option<String>,
 
     /// Skip agent auto-detection and use direct API mode
-    #[arg(long, global = true)]
+    #[arg(long, global = true, hide = true)]
     pub no_agent: bool,
 }
 
