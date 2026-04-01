@@ -115,10 +115,7 @@ pub fn stop(socket_path: &Path) -> Result<String, AppError> {
             }
         })
         .ok_or_else(|| {
-            AppError::Config(format!(
-                "No PID file found for {}",
-                socket_path.display()
-            ))
+            AppError::Config(format!("No PID file found for {}", socket_path.display()))
         })?;
 
     stop_with_pid(socket_path, pid)
