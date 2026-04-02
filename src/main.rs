@@ -7,17 +7,15 @@ use mde::auth::oauth2::OAuth2Auth;
 use mde::cli::agent::AgentCommand;
 use mde::cli::{Cli, Commands};
 use mde::client::MdeClient;
-use mde::config::{Config, MdeCredentials};
+use mde::config::MdeCredentials;
 use mde::error::AppError;
 
 fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
-    // Load config and resolve credentials early (before fork).
-    let config = Config::load().unwrap_or_default();
-    let credentials =
-        MdeCredentials::resolve(cli.tenant_id.as_deref(), cli.client_id.as_deref(), &config);
+    // Resolve credentials early (before fork).
+    let credentials = MdeCredentials::resolve(cli.tenant_id.as_deref(), cli.client_id.as_deref());
 
     // Handle agent start (fork) before creating tokio runtime.
     // fork() is unsafe in multi-threaded processes, so we must do it here.
@@ -166,7 +164,7 @@ async fn run(cli: Cli, credentials: MdeCredentials) -> Result<(), AppError> {
         })?;
         let cs = credentials.client_secret.as_ref().ok_or_else(|| {
             AppError::Config(
-                "client_secret not set. Set MDE_CLIENT_SECRET env var or config.toml [auth].client_secret."
+                "client_secret not set. Set MDE_CLIENT_SECRET env var or credentials.toml."
                     .to_string(),
             )
         })?;
@@ -178,28 +176,28 @@ async fn run(cli: Cli, credentials: MdeCredentials) -> Result<(), AppError> {
     match &command {
         Commands::Alerts { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://api.security.microsoft.com",
+                &credentials.mde_base_url,
                 "https://api.securitycenter.microsoft.com/.default",
             )?;
             mde::commands::alerts::handle(&client, cmd, cli.output, cli.raw).await
         }
         Commands::Incidents { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://graph.microsoft.com",
+                &credentials.graph_base_url,
                 "https://graph.microsoft.com/.default",
             )?;
             mde::commands::incidents::handle(&client, cmd, cli.output, cli.raw).await
         }
         Commands::Hunting { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://graph.microsoft.com",
+                &credentials.graph_base_url,
                 "https://graph.microsoft.com/.default",
             )?;
             mde::commands::hunting::handle(&client, cmd, cli.output).await
         }
         Commands::Machines { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://api.security.microsoft.com",
+                &credentials.mde_base_url,
                 "https://api.securitycenter.microsoft.com/.default",
             )?;
             mde::commands::machines::handle(&client, cmd, cli.output, cli.raw).await

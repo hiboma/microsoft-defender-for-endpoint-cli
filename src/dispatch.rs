@@ -32,6 +32,9 @@ pub async fn dispatch_from_args(
         None => return Ok(String::new()),
     };
 
+    let mde_base_url = credentials.mde_base_url.clone();
+    let graph_base_url = credentials.graph_base_url.clone();
+
     let build_mde_client = |base_url: &str, scope: &str| -> Result<MdeClient, AppError> {
         if let Some(ref token) = credentials.access_token {
             let auth = StaticTokenAuth(token.clone());
@@ -48,7 +51,7 @@ pub async fn dispatch_from_args(
 
         let client_secret = credentials.client_secret.as_ref().ok_or_else(|| {
             AppError::Config(
-                "client_secret not set. Set MDE_CLIENT_SECRET env var or config.toml [auth].client_secret."
+                "client_secret not set. Set MDE_CLIENT_SECRET env var or credentials.toml."
                     .to_string(),
             )
         })?;
@@ -62,7 +65,15 @@ pub async fn dispatch_from_args(
         MdeClient::new(base_url.to_string(), Box::new(auth))
     };
 
-    dispatch_command(&command, cli.output, cli.raw, build_mde_client).await
+    dispatch_command(
+        &command,
+        cli.output,
+        cli.raw,
+        &mde_base_url,
+        &graph_base_url,
+        build_mde_client,
+    )
+    .await
 }
 
 /// Dispatch a command and capture its output as a string.
@@ -71,6 +82,8 @@ async fn dispatch_command<F>(
     command: &Commands,
     output_format: crate::output::OutputFormat,
     raw: bool,
+    mde_base_url: &str,
+    graph_base_url: &str,
     build_mde_client: F,
 ) -> Result<String, AppError>
 where
@@ -86,28 +99,22 @@ where
     let result = match command {
         Commands::Alerts { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://api.security.microsoft.com",
+                mde_base_url,
                 "https://api.securitycenter.microsoft.com/.default",
             )?;
             crate::commands::alerts::handle(&client, cmd, output_format, raw).await
         }
         Commands::Incidents { command: Some(cmd) } => {
-            let client = build_mde_client(
-                "https://graph.microsoft.com",
-                "https://graph.microsoft.com/.default",
-            )?;
+            let client = build_mde_client(graph_base_url, "https://graph.microsoft.com/.default")?;
             crate::commands::incidents::handle(&client, cmd, output_format, raw).await
         }
         Commands::Hunting { command: Some(cmd) } => {
-            let client = build_mde_client(
-                "https://api.security.microsoft.com",
-                "https://api.securitycenter.microsoft.com/.default",
-            )?;
+            let client = build_mde_client(graph_base_url, "https://graph.microsoft.com/.default")?;
             crate::commands::hunting::handle(&client, cmd, output_format).await
         }
         Commands::Machines { command: Some(cmd) } => {
             let client = build_mde_client(
-                "https://api.security.microsoft.com",
+                mde_base_url,
                 "https://api.securitycenter.microsoft.com/.default",
             )?;
             crate::commands::machines::handle(&client, cmd, output_format, raw).await

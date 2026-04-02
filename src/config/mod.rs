@@ -3,48 +3,141 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::error::AppError;
+const DEFAULT_MDE_BASE_URL: &str = "https://api.security.microsoft.com";
+const DEFAULT_GRAPH_BASE_URL: &str = "https://graph.microsoft.com";
 
-/// Resolved MDE credentials collected from CLI args, environment variables, and config.toml.
+/// TOML representation of `[credentials]` in credentials.toml.
+#[derive(Debug, Deserialize, Default)]
+struct CredentialsFileRoot {
+    #[serde(default)]
+    credentials: CredentialsFile,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CredentialsFile {
+    tenant_id: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    mde_base_url: Option<String>,
+    graph_base_url: Option<String>,
+}
+
+/// Filter empty strings to None so that unfilled template values
+/// (e.g. `client_id = ""`) do not bypass validation.
+fn non_empty(s: Option<String>) -> Option<String> {
+    s.filter(|v| !v.is_empty())
+}
+
+/// Search paths for credentials.toml (highest priority first).
+fn credentials_search_paths() -> Vec<PathBuf> {
+    let mut paths = vec![PathBuf::from(".mde-credentials.toml")];
+    if let Ok(config_home) = std::env::var("XDG_CONFIG_HOME") {
+        paths.push(
+            PathBuf::from(config_home)
+                .join("mde")
+                .join("credentials.toml"),
+        );
+    } else if let Ok(home) = std::env::var("HOME") {
+        paths.push(
+            PathBuf::from(home)
+                .join(".config")
+                .join("mde")
+                .join("credentials.toml"),
+        );
+    }
+    paths
+}
+
+/// Load credentials from the first credentials.toml found.
+fn load_credentials_file() -> CredentialsFile {
+    for path in credentials_search_paths() {
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        match toml::from_str::<CredentialsFileRoot>(&content) {
+            Ok(root) => {
+                let c = root.credentials;
+                return CredentialsFile {
+                    tenant_id: non_empty(c.tenant_id),
+                    client_id: non_empty(c.client_id),
+                    client_secret: non_empty(c.client_secret),
+                    mde_base_url: non_empty(c.mde_base_url),
+                    graph_base_url: non_empty(c.graph_base_url),
+                };
+            }
+            Err(e) => {
+                eprintln!("warning: failed to parse {}: {}", path.display(), e);
+            }
+        }
+    }
+    CredentialsFile::default()
+}
+
+/// Resolved MDE credentials collected from CLI args, environment variables,
+/// and credentials.toml.
 /// Once constructed, the process should unset the MDE_* environment variables so that
 /// forked child processes (agent) do not inherit credentials via the environment.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MdeCredentials {
     pub tenant_id: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
     pub access_token: Option<String>,
+    pub mde_base_url: String,
+    pub graph_base_url: String,
+}
+
+impl Default for MdeCredentials {
+    fn default() -> Self {
+        Self {
+            tenant_id: None,
+            client_id: None,
+            client_secret: None,
+            access_token: None,
+            mde_base_url: DEFAULT_MDE_BASE_URL.to_string(),
+            graph_base_url: DEFAULT_GRAPH_BASE_URL.to_string(),
+        }
+    }
 }
 
 impl MdeCredentials {
-    /// Resolve credentials from CLI args, environment variables, and config.toml.
-    /// Priority: CLI args > environment variables > config.toml.
-    pub fn resolve(
-        cli_tenant_id: Option<&str>,
-        cli_client_id: Option<&str>,
-        config: &Config,
-    ) -> Self {
+    /// Resolve credentials from CLI args, environment variables, and credentials.toml.
+    /// Priority: CLI args > environment variables > credentials.toml > defaults.
+    pub fn resolve(cli_tenant_id: Option<&str>, cli_client_id: Option<&str>) -> Self {
+        let file = load_credentials_file();
+
         let tenant_id = cli_tenant_id
             .map(String::from)
             .or_else(|| std::env::var("MDE_TENANT_ID").ok())
-            .or_else(|| config.auth.tenant_id.clone());
+            .or(file.tenant_id);
 
         let client_id = cli_client_id
             .map(String::from)
             .or_else(|| std::env::var("MDE_CLIENT_ID").ok())
-            .or_else(|| config.auth.client_id.clone());
+            .or(file.client_id);
 
         let client_secret = std::env::var("MDE_CLIENT_SECRET")
             .ok()
-            .or_else(|| config.auth.client_secret.clone());
+            .or(file.client_secret);
 
         let access_token = std::env::var("MDE_ACCESS_TOKEN").ok();
+
+        let mde_base_url = file
+            .mde_base_url
+            .unwrap_or_else(|| DEFAULT_MDE_BASE_URL.to_string());
+
+        let graph_base_url = file
+            .graph_base_url
+            .unwrap_or_else(|| DEFAULT_GRAPH_BASE_URL.to_string());
 
         Self {
             tenant_id,
             client_id,
             client_secret,
             access_token,
+            mde_base_url,
+            graph_base_url,
         }
     }
 
@@ -70,7 +163,7 @@ impl MdeCredentials {
             Ok(())
         } else {
             Err(format!(
-                "missing required credentials: {}. Set via environment variables or config.toml.",
+                "missing required credentials: {}. Set via environment variables or credentials.toml.",
                 missing.join(", ")
             ))
         }
@@ -146,117 +239,68 @@ unsafe fn overwrite_environ_value(name: &str) {
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct Config {
-    #[serde(default)]
-    pub auth: AuthConfig,
-    #[serde(default)]
-    pub api: ApiConfig,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct AuthConfig {
-    pub tenant_id: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct ApiConfig {
-    pub mde_base_url: Option<String>,
-    pub graph_base_url: Option<String>,
-}
-
-impl Config {
-    pub fn load() -> Result<Self, AppError> {
-        let path = Self::config_path();
-        if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|e| {
-                AppError::Config(format!(
-                    "failed to read config file {}: {}",
-                    path.display(),
-                    e
-                ))
-            })?;
-            let config: Config = toml::from_str(&content)
-                .map_err(|e| AppError::Config(format!("failed to parse config file: {}", e)))?;
-            Ok(config)
-        } else {
-            Ok(Config::default())
-        }
-    }
-
-    fn config_path() -> PathBuf {
-        dirs_config_path().join("config.toml")
-    }
-}
-
-fn dirs_config_path() -> PathBuf {
-    if let Some(config_dir) = dirs_home().map(|h| h.join(".config").join("mde")) {
-        config_dir
-    } else {
-        PathBuf::from(".config/mde")
-    }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-/// Resolve a value from CLI option, environment variable, or config file (in priority order).
-pub fn resolve_value(
-    cli_value: Option<&str>,
-    env_var: &str,
-    config_value: Option<&str>,
-) -> Option<String> {
-    cli_value
-        .map(String::from)
-        .or_else(|| std::env::var(env_var).ok())
-        .or_else(|| config_value.map(String::from))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
-        let config = Config::default();
-        assert!(config.auth.tenant_id.is_none());
-        assert!(config.auth.client_id.is_none());
-        assert!(config.auth.client_secret.is_none());
-    }
-
-    #[test]
-    fn test_parse_config() {
+    fn test_credentials_file_parse_full() {
         let toml_str = r#"
-[auth]
-tenant_id = "t-123"
-client_id = "c-456"
-client_secret = "s-789"
-
-[api]
-mde_base_url = "https://api.security.microsoft.com"
-graph_base_url = "https://graph.microsoft.com"
+[credentials]
+tenant_id = "toml-tenant"
+client_id = "toml-id"
+client_secret = "toml-secret"
+mde_base_url = "https://custom.api.example.com"
+graph_base_url = "https://custom.graph.example.com"
 "#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.auth.tenant_id.as_deref(), Some("t-123"));
+        let root: CredentialsFileRoot = toml::from_str(toml_str).unwrap();
+        assert_eq!(root.credentials.tenant_id.as_deref(), Some("toml-tenant"));
+        assert_eq!(root.credentials.client_id.as_deref(), Some("toml-id"));
         assert_eq!(
-            config.api.mde_base_url.as_deref(),
-            Some("https://api.security.microsoft.com")
+            root.credentials.client_secret.as_deref(),
+            Some("toml-secret")
+        );
+        assert_eq!(
+            root.credentials.mde_base_url.as_deref(),
+            Some("https://custom.api.example.com")
+        );
+        assert_eq!(
+            root.credentials.graph_base_url.as_deref(),
+            Some("https://custom.graph.example.com")
         );
     }
 
     #[test]
-    fn test_resolve_value_priority() {
-        let result = resolve_value(Some("cli"), "NONEXISTENT_VAR", Some("config"));
-        assert_eq!(result.as_deref(), Some("cli"));
+    fn test_credentials_file_parse_minimal() {
+        let toml_str = r#"
+[credentials]
+tenant_id = "toml-tenant"
+client_id = "toml-id"
+client_secret = "toml-secret"
+"#;
+        let root: CredentialsFileRoot = toml::from_str(toml_str).unwrap();
+        assert_eq!(root.credentials.tenant_id.as_deref(), Some("toml-tenant"));
+        assert!(root.credentials.mde_base_url.is_none());
+        assert!(root.credentials.graph_base_url.is_none());
+    }
 
-        let result = resolve_value(None, "NONEXISTENT_VAR_12345", Some("config"));
-        assert_eq!(result.as_deref(), Some("config"));
+    #[test]
+    fn test_credentials_file_parse_empty() {
+        let toml_str = "";
+        let root: CredentialsFileRoot = toml::from_str(toml_str).unwrap();
+        assert!(root.credentials.tenant_id.is_none());
+        assert!(root.credentials.client_id.is_none());
+        assert!(root.credentials.client_secret.is_none());
+    }
 
-        let result = resolve_value(None, "NONEXISTENT_VAR_12345", None);
-        assert!(result.is_none());
+    #[test]
+    fn test_non_empty_filters_empty_strings() {
+        assert_eq!(non_empty(Some("".to_string())), None);
+        assert_eq!(
+            non_empty(Some("value".to_string())),
+            Some("value".to_string())
+        );
+        assert_eq!(non_empty(None), None);
     }
 
     #[test]
@@ -274,7 +318,7 @@ graph_base_url = "https://graph.microsoft.com"
             tenant_id: Some("t".to_string()),
             client_id: Some("c".to_string()),
             client_secret: Some("s".to_string()),
-            access_token: None,
+            ..Default::default()
         };
         assert!(creds.validate().is_ok());
     }
@@ -300,6 +344,13 @@ graph_base_url = "https://graph.microsoft.com"
         assert!(err.contains("MDE_CLIENT_SECRET"));
     }
 
+    #[test]
+    fn test_mde_credentials_default_base_urls() {
+        let creds = MdeCredentials::default();
+        assert_eq!(creds.mde_base_url, "https://api.security.microsoft.com");
+        assert_eq!(creds.graph_base_url, "https://graph.microsoft.com");
+    }
+
     /// Helper to ensure MDE_* env vars are cleared before tests that call resolve().
     /// Tests run in parallel, so env var mutations in one test can leak into another.
     unsafe fn clear_mde_env() {
@@ -311,50 +362,37 @@ graph_base_url = "https://graph.microsoft.com"
         }
     }
 
-    #[test]
-    fn test_mde_credentials_resolve_cli_overrides_config() {
-        unsafe { clear_mde_env() };
-        let config = Config {
-            auth: AuthConfig {
-                tenant_id: Some("config-tenant".to_string()),
-                client_id: Some("config-client".to_string()),
-                client_secret: Some("config-secret".to_string()),
-            },
-            ..Default::default()
-        };
-        let creds = MdeCredentials::resolve(Some("cli-tenant"), Some("cli-client"), &config);
-        assert_eq!(creds.tenant_id.as_deref(), Some("cli-tenant"));
-        assert_eq!(creds.client_id.as_deref(), Some("cli-client"));
-        // client_secret has no CLI arg, falls through to config
-        assert_eq!(creds.client_secret.as_deref(), Some("config-secret"));
-    }
-
-    #[test]
-    fn test_mde_credentials_resolve_config_fallback() {
-        unsafe { clear_mde_env() };
-        let config = Config {
-            auth: AuthConfig {
-                tenant_id: Some("config-tenant".to_string()),
-                client_id: Some("config-client".to_string()),
-                client_secret: Some("config-secret".to_string()),
-            },
-            ..Default::default()
-        };
-        let creds = MdeCredentials::resolve(None, None, &config);
-        assert_eq!(creds.tenant_id.as_deref(), Some("config-tenant"));
-        assert_eq!(creds.client_id.as_deref(), Some("config-client"));
-        assert_eq!(creds.client_secret.as_deref(), Some("config-secret"));
+    /// Helper to isolate resolve() from the user's real credentials.toml.
+    /// Points XDG_CONFIG_HOME to an empty temp dir so no file is found.
+    /// Also sets HOME to the same temp dir to prevent fallback to ~/.config/mde/.
+    fn with_isolated_credentials<F: FnOnce()>(f: F) {
+        let tmp = tempfile::tempdir().unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+            std::env::set_var("HOME", tmp.path());
+        }
+        f();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            if let Some(h) = orig_home {
+                std::env::set_var("HOME", h);
+            }
+        }
     }
 
     #[test]
     fn test_mde_credentials_resolve_empty() {
         unsafe { clear_mde_env() };
-        let config = Config::default();
-        let creds = MdeCredentials::resolve(None, None, &config);
-        assert!(creds.tenant_id.is_none());
-        assert!(creds.client_id.is_none());
-        assert!(creds.client_secret.is_none());
-        assert!(creds.access_token.is_none());
+        with_isolated_credentials(|| {
+            let creds = MdeCredentials::resolve(None, None);
+            assert!(creds.tenant_id.is_none());
+            assert!(creds.client_id.is_none());
+            assert!(creds.client_secret.is_none());
+            assert!(creds.access_token.is_none());
+            assert_eq!(creds.mde_base_url, DEFAULT_MDE_BASE_URL);
+            assert_eq!(creds.graph_base_url, DEFAULT_GRAPH_BASE_URL);
+        });
     }
 
     #[test]
@@ -379,31 +417,94 @@ graph_base_url = "https://graph.microsoft.com"
         assert!(std::env::var("MDE_ACCESS_TOKEN").is_err());
     }
 
+    /// Helper to create an isolated credentials.toml for testing resolve().
+    /// Writes the given TOML content to $XDG_CONFIG_HOME/mde/credentials.toml
+    /// and calls f() with the environment isolated.
+    fn with_credentials_file<F: FnOnce()>(toml_content: &str, f: F) {
+        let tmp = tempfile::tempdir().unwrap();
+        let creds_dir = tmp.path().join("mde");
+        std::fs::create_dir_all(&creds_dir).unwrap();
+        std::fs::write(creds_dir.join("credentials.toml"), toml_content).unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+            std::env::set_var("HOME", tmp.path());
+        }
+        f();
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+            if let Some(h) = orig_home {
+                std::env::set_var("HOME", h);
+            }
+        }
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_credentials_file_fallback() {
+        unsafe { clear_mde_env() };
+        let toml_content = r#"
+[credentials]
+tenant_id = "file-tenant"
+client_id = "file-client"
+client_secret = "file-secret"
+mde_base_url = "https://custom.api.example.com"
+graph_base_url = "https://custom.graph.example.com"
+"#;
+        with_credentials_file(toml_content, || {
+            let creds = MdeCredentials::resolve(None, None);
+            assert_eq!(creds.tenant_id.as_deref(), Some("file-tenant"));
+            assert_eq!(creds.client_id.as_deref(), Some("file-client"));
+            assert_eq!(creds.client_secret.as_deref(), Some("file-secret"));
+            assert_eq!(creds.mde_base_url, "https://custom.api.example.com");
+            assert_eq!(creds.graph_base_url, "https://custom.graph.example.com");
+        });
+    }
+
+    #[test]
+    fn test_mde_credentials_resolve_cli_overrides_credentials_file() {
+        unsafe { clear_mde_env() };
+        let toml_content = r#"
+[credentials]
+tenant_id = "file-tenant"
+client_id = "file-client"
+client_secret = "file-secret"
+"#;
+        with_credentials_file(toml_content, || {
+            let creds = MdeCredentials::resolve(Some("cli-tenant"), Some("cli-client"));
+            // CLI args override credentials.toml
+            assert_eq!(creds.tenant_id.as_deref(), Some("cli-tenant"));
+            assert_eq!(creds.client_id.as_deref(), Some("cli-client"));
+            // client_secret has no CLI arg, falls through to credentials.toml
+            assert_eq!(creds.client_secret.as_deref(), Some("file-secret"));
+        });
+    }
+
     #[test]
     fn test_mde_credentials_resolve_then_clear_env() {
-        // Set env vars
-        unsafe {
-            std::env::set_var("MDE_TENANT_ID", "env-tenant");
-            std::env::set_var("MDE_CLIENT_SECRET", "env-secret");
-        }
+        with_isolated_credentials(|| {
+            // Set env vars
+            unsafe {
+                std::env::set_var("MDE_TENANT_ID", "env-tenant");
+                std::env::set_var("MDE_CLIENT_SECRET", "env-secret");
+            }
 
-        // Resolve picks up env vars
-        let config = Config::default();
-        let creds = MdeCredentials::resolve(None, None, &config);
-        assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
-        assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
+            // Resolve picks up env vars
+            let creds = MdeCredentials::resolve(None, None);
+            assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
+            assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
 
-        // Clear env
-        unsafe {
-            MdeCredentials::clear_env();
-        }
+            // Clear env
+            unsafe {
+                MdeCredentials::clear_env();
+            }
 
-        // Credentials struct still holds the values
-        assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
-        assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
+            // Credentials struct still holds the values
+            assert_eq!(creds.tenant_id.as_deref(), Some("env-tenant"));
+            assert_eq!(creds.client_secret.as_deref(), Some("env-secret"));
 
-        // But env vars are gone
-        assert!(std::env::var("MDE_TENANT_ID").is_err());
-        assert!(std::env::var("MDE_CLIENT_SECRET").is_err());
+            // But env vars are gone
+            assert!(std::env::var("MDE_TENANT_ID").is_err());
+            assert!(std::env::var("MDE_CLIENT_SECRET").is_err());
+        });
     }
 }

@@ -338,6 +338,7 @@ mod env_tests {
             client_id: Some("c".to_string()),
             client_secret: Some("s".to_string()),
             access_token: None,
+            ..Default::default()
         };
         assert!(validate_credentials(&creds).is_ok());
 
