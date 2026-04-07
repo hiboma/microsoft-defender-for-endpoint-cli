@@ -72,6 +72,7 @@ impl OAuth2Auth {
             ("scope", &self.scope),
         ];
 
+        // codeql[rust/cleartext-transmission] token_url() uses HTTPS (login.microsoftonline.com)
         let resp = self
             .http
             .post(self.token_url())

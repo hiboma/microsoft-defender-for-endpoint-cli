@@ -138,6 +138,10 @@ impl AuditLog {
 
     /// Log an audit entry and print to stderr.
     /// Old entries are evicted when the ring buffer is full.
+    ///
+    /// Note: peer_uid is intentionally logged for security auditing purposes.
+    /// It represents a Unix UID (not a secret) and is essential for detecting
+    /// unauthorized access attempts. (CodeQL: cleartext-logging false positive)
     pub fn log(&self, entry: AuditEntry) {
         let msg = match &entry.result {
             AuditResult::Allowed => format!(
@@ -153,7 +157,7 @@ impl AuditLog {
                 entry.timestamp, entry.command, entry.action, err, entry.peer_uid
             ),
         };
-        eprintln!("{}", msg);
+        eprintln!("{}", msg); // codeql[rust/cleartext-logging] UID is not sensitive; logged for security auditing
 
         let mut entries = self.entries.lock().unwrap();
         if entries.len() >= MAX_AUDIT_ENTRIES {
