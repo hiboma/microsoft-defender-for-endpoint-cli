@@ -6,6 +6,7 @@ pub mod incidents;
 pub mod machines;
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 use crate::output::OutputFormat;
 
@@ -32,6 +33,7 @@ Authentication:
   agent              Manage the credential isolation agent
 
 Other:
+  completion         Generate shell completion script
   help               Print this message or the help of the given subcommand(s)
 
 {all-args}{after-help}"
@@ -137,6 +139,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: agent::AgentCommand,
     },
+    /// Generate shell completion script
+    #[command(hide = true)]
+    Completion {
+        /// Shell to generate completion for
+        shell: Shell,
+    },
 }
 
 impl Commands {
@@ -148,6 +156,7 @@ impl Commands {
             Commands::Hunting { .. } => "hunting",
             Commands::Machines { .. } => "machines",
             Commands::Agent { .. } => "agent",
+            Commands::Completion { .. } => "completion",
         }
     }
 }
