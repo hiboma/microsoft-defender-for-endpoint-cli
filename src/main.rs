@@ -1,4 +1,6 @@
 use clap::{CommandFactory, Parser};
+use clap_complete::generate;
+use std::io;
 use std::path::PathBuf;
 use std::process;
 
@@ -98,6 +100,14 @@ async fn run(cli: Cli, credentials: MdeCredentials) -> Result<(), AppError> {
             return Ok(());
         }
     };
+
+    // Handle completion generation (no credentials required).
+    if let Commands::Completion { shell } = &command {
+        let mut cmd = Cli::command();
+        let bin_name = cmd.get_name().to_string();
+        generate(*shell, &mut cmd, bin_name, &mut io::stdout());
+        return Ok(());
+    }
 
     // Handle agent subcommands.
     if let Commands::Agent { command: agent_cmd } = &command {
@@ -319,6 +329,7 @@ fn requires_agent_routing(command: &Commands) -> bool {
         Commands::Machines { command } => command.is_some(),
         Commands::Auth { command } => command.is_some(),
         Commands::Agent { .. } => false, // agent commands are handled separately
+        Commands::Completion { .. } => false, // handled locally
     }
 }
 
