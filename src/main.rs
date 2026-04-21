@@ -109,6 +109,11 @@ async fn run(cli: Cli, credentials: MdeCredentials) -> Result<(), AppError> {
         return Ok(());
     }
 
+    // Handle credentials store management (does not require API credentials).
+    if let Commands::Credentials { command: cred_cmd } = &command {
+        return mde::commands::credentials::handle(cred_cmd);
+    }
+
     // Handle agent subcommands.
     if let Commands::Agent { command: agent_cmd } = &command {
         return handle_agent_command(agent_cmd, credentials).await;
@@ -329,6 +334,7 @@ fn requires_agent_routing(command: &Commands) -> bool {
         Commands::Machines { command } => command.is_some(),
         Commands::Auth { command } => command.is_some(),
         Commands::Agent { .. } => false, // agent commands are handled separately
+        Commands::Credentials { .. } => false, // handled locally
         Commands::Completion { .. } => false, // handled locally
     }
 }
