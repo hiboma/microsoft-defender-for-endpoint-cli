@@ -508,11 +508,10 @@ client_secret = "abc123"
 client_id = "c"
 "#;
         let out = remove_client_secret_line(s);
-        assert!(
-            !out.contains("client_secret"),
-            "client_secret remained: {}",
-            out
-        );
+        // Don't include `out` in the assert message: CodeQL flags
+        // formatting a function-of-secret-shaped-input into a diagnostic
+        // string, even though this is a test fixture.
+        assert!(!out.contains("client_secret"));
         assert!(!out.contains("abc123"));
         assert!(out.contains("# comment"));
         assert!(out.contains("tenant_id = \"t\""));
