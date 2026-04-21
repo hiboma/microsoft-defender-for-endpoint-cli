@@ -16,6 +16,26 @@ fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
+    // For subcommands that do not talk to the API (`credentials`,
+    // `completion`), skip resolve() entirely. resolve() may consult the
+    // OS credential store, which can prompt or fail with an ACL error;
+    // letting that noise leak into a `credentials status` invocation
+    // confuses the user — the whole point of `credentials status` is to
+    // tell them about the store, not to be polluted by it.
+    if matches!(
+        cli.command,
+        Some(Commands::Credentials { .. }) | Some(Commands::Completion { .. })
+    ) {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            if let Err(e) = run(cli, MdeCredentials::default()).await {
+                eprintln!("Error: {}", e);
+                process::exit(e.exit_code());
+            }
+        });
+        return;
+    }
+
     // Resolve credentials early (before fork).
     let credentials = MdeCredentials::resolve(cli.tenant_id.as_deref(), cli.client_id.as_deref());
 
