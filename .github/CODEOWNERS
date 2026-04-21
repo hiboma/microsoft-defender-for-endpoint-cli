@@ -1,1 +1,20 @@
-* @hiboma
+# Default owner for every file in the repository.
+*                          @hiboma
+
+# Security-sensitive paths. Duplicated as explicit rules so that any
+# future co-maintainer still needs the named owner's review on these.
+
+# GitHub Actions workflows and dependency automation.
+/.github/                  @hiboma
+/.github/workflows/        @hiboma
+/.github/dependabot.yml    @hiboma
+/.pinact.yaml              @hiboma
+
+# Rust dependency manifest and lockfile.
+/Cargo.toml                @hiboma
+/Cargo.lock                @hiboma
+
+# Authentication (OAuth2, device flow, browser login) and the
+# credential isolation agent that brokers access tokens.
+/src/auth/                 @hiboma
+/src/agent/                @hiboma
