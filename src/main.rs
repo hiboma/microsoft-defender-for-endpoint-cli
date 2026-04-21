@@ -16,6 +16,26 @@ fn main() {
     dotenvy::dotenv().ok();
     let cli = Cli::parse();
 
+    // For subcommands that do not talk to the API (`credentials`,
+    // `completion`), skip resolve() entirely. resolve() may consult the
+    // OS credential store, which can prompt or fail with an ACL error;
+    // letting that noise leak into a `credentials status` invocation
+    // confuses the user — the whole point of `credentials status` is to
+    // tell them about the store, not to be polluted by it.
+    if matches!(
+        cli.command,
+        Some(Commands::Credentials { .. }) | Some(Commands::Completion { .. })
+    ) {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+        rt.block_on(async {
+            if let Err(e) = run(cli, MdeCredentials::default()).await {
+                eprintln!("Error: {}", e);
+                process::exit(e.exit_code());
+            }
+        });
+        return;
+    }
+
     // Resolve credentials early (before fork).
     let credentials = MdeCredentials::resolve(cli.tenant_id.as_deref(), cli.client_id.as_deref());
 
@@ -107,6 +127,11 @@ async fn run(cli: Cli, credentials: MdeCredentials) -> Result<(), AppError> {
         let bin_name = cmd.get_name().to_string();
         generate(*shell, &mut cmd, bin_name, &mut io::stdout());
         return Ok(());
+    }
+
+    // Handle credentials store management (does not require API credentials).
+    if let Commands::Credentials { command: cred_cmd } = &command {
+        return mde::commands::credentials::handle(cred_cmd);
     }
 
     // Handle agent subcommands.
@@ -329,6 +354,7 @@ fn requires_agent_routing(command: &Commands) -> bool {
         Commands::Machines { command } => command.is_some(),
         Commands::Auth { command } => command.is_some(),
         Commands::Agent { .. } => false, // agent commands are handled separately
+        Commands::Credentials { .. } => false, // handled locally
         Commands::Completion { .. } => false, // handled locally
     }
 }

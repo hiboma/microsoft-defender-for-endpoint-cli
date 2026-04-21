@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod alerts;
 pub mod auth;
+pub mod credentials;
 pub mod hunting;
 pub mod incidents;
 pub mod machines;
@@ -31,6 +32,7 @@ Resources:
 Authentication:
   auth               Authenticate and manage tokens
   agent              Manage the credential isolation agent
+  credentials        Manage stored credentials (Keychain on macOS)
 
 Other:
   completion         Generate shell completion script
@@ -139,6 +141,24 @@ pub enum Commands {
         #[command(subcommand)]
         command: agent::AgentCommand,
     },
+    /// Manage stored credentials (macOS Keychain)
+    #[command(
+        subcommand_required = true,
+        arg_required_else_help = true,
+        hide = true,
+        long_about = "Manage stored credentials (macOS Keychain).\n\
+                      \n\
+                      Secrets are stored in the login keychain under \
+                      service=\"dev.mde-cli\". Inspect or delete via \
+                      Keychain Access.app or `security \
+                      find-generic-password -s dev.mde-cli`. See README \
+                      for the full credential resolution order and \
+                      migration steps."
+    )]
+    Credentials {
+        #[command(subcommand)]
+        command: credentials::CredentialsCommand,
+    },
     /// Generate shell completion script
     #[command(hide = true)]
     Completion {
@@ -156,6 +176,7 @@ impl Commands {
             Commands::Hunting { .. } => "hunting",
             Commands::Machines { .. } => "machines",
             Commands::Agent { .. } => "agent",
+            Commands::Credentials { .. } => "credentials",
             Commands::Completion { .. } => "completion",
         }
     }
