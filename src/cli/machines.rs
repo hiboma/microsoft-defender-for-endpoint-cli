@@ -51,9 +51,9 @@ pub struct LogonUsersArgs {
 
 #[derive(Args)]
 pub struct TagArgs {
-    /// Machine ID
+    /// Machine ID (e.g. 1e5bc9d7e413ddd7902c2932e418702b84d0cc07)
     pub id: String,
 
-    /// Tag value
+    /// Tag value (case-sensitive; remove-tag must be called with the exact same value used to add)
     pub value: String,
 }

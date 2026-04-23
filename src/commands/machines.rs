@@ -25,6 +25,12 @@ async fn update_tag(
     action: &str,
     output_format: OutputFormat,
 ) -> Result<(), AppError> {
+    if args.value.trim().is_empty() {
+        return Err(AppError::InvalidInput(
+            "tag value must not be empty or whitespace-only".to_string(),
+        ));
+    }
+
     let path = format!("/api/machines/{}/tags", args.id);
     let body = serde_json::json!({
         "Value": args.value,
