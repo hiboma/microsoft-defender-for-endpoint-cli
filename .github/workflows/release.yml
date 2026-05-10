@@ -74,7 +74,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: taiki-e/install-action@eea29cff9a2b68892c0845ae3e4f45fc47ee9354 # v2.75.13
+      - uses: taiki-e/install-action@db5fb34fa772531a3ece57ca434f579eb334e0fb # v2.75.30
         with:
           tool: cargo-cyclonedx@0.5.9
 
